@@ -240,10 +240,14 @@ impl Proxy {
                 );
                 parts.uri = uri.parse().map_err(|_| ())?;
                 let up = Request::from_parts(parts, body);
+                let t0 = std::time::Instant::now();
                 let resp = tokio::time::timeout(UPSTREAM_TIMEOUT, self.http.request(up))
                     .await
                     .map_err(|_| ())?
                     .map_err(|_| ())?;
+                if std::env::var("HB_TIMING").is_ok() {
+                    eprintln!("DBG head={:?}", t0.elapsed());
+                }
                 Ok(strip_hop_headers(resp))
             }
             #[cfg(unix)]
