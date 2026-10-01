@@ -1,0 +1,28 @@
+[package]
+name = "hakobalancer"
+version = "0.1.0"
+edition = "2021"
+description = "Stateless L7 balancer over hakobackend upstreams (TCP + unix socket)"
+license = "MIT"
+repository = "https://github.com/hakodb/hakobalancer"
+
+[[bin]]
+name = "hakobalancer"
+path = "src/main.rs"
+
+[lib]
+name = "hakobalancer"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8" }
+hyper = { version = "1", default-features = false, features = ["server", "http1", "client"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "client-legacy"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.8" }
+clap = { version = "4", features = ["derive"] }
+http-body-util = "0.1"
+bytes = "1"
+tracing = "0.1"
