@@ -24,5 +24,12 @@ serde = { version = "1", features = ["derive"] }
 toml = { version = "0.8" }
 clap = { version = "4", features = ["derive"] }
 http-body-util = "0.1"
+http = "1"
 bytes = "1"
 tracing = "0.1"
+
+# Unix-socket upstream client. Unix-only: hyperlocal references
+# tokio::net::UnixListener unconditionally (breaks Windows builds),
+# so it stays behind cfg(unix) like every other socket feature here.
+[target.'cfg(unix)'.dependencies]
+hyperlocal = "0.9"
