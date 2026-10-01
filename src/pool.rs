@@ -57,20 +57,36 @@ impl Pool {
 
     /// Next healthy backend in rotation, or None when all ejected.
     pub fn pick(&self) -> Option<&Backend> {
+        self.pick_index().map(|(_, b)| b)
+    }
+
+    /// Next healthy backend with its stable pool index (for pin cookies).
+    pub fn pick_index(&self) -> Option<(usize, &Backend)> {
         let n = self.backends.len();
         if n == 0 {
             return None;
         }
-        // ponytail: wrapping cursor, at most one full sweep — ejected
+        // ponytail: wrapping cursor, at most one full sweep - ejected
         // backends are skipped, never retried inside pick (probes own that).
         let start = self.cursor.fetch_add(1, Ordering::Relaxed);
         for k in 0..n {
-            let b = &self.backends[(start + k) % n];
+            let i = (start + k) % n;
+            let b = &self.backends[i];
             if b.healthy() {
-                return Some(b);
+                return Some((i, b));
             }
         }
         None
+    }
+
+    /// Backend by pool index (pin resolution).
+    pub fn backend_at(&self, index: usize) -> Option<&Backend> {
+        self.backends.get(index)
+    }
+
+    /// Pin-validity check: in range AND healthy.
+    pub fn healthy_at(&self, index: usize) -> bool {
+        self.backends.get(index).is_some_and(|b| b.healthy())
     }
 
     /// Record a probe result: eject past threshold, re-admit on success.
