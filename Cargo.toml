@@ -20,6 +20,8 @@ axum = { version = "0.8" }
 hyper = { version = "1", default-features = false, features = ["server", "http1", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio", "client-legacy"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
+tower-http = { version = "0.6", features = ["set-header"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.8" }
 clap = { version = "4", features = ["derive"] }

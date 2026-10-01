@@ -40,6 +40,12 @@ pub struct BalancerConfig {
     pub health_interval_secs: u64,
     #[serde(default)]
     pub backends: Vec<BackendDecl>,
+    /// TLS termination pair (both required to enable). Absent = plain
+    /// HTTP (yesterday's default). Same certs nginx used work here.
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+    #[serde(default)]
+    pub tls_key: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -57,6 +63,8 @@ impl Default for BalancerConfig {
             strategy: Strategy::default(),
             health_interval_secs: default_health_interval(),
             backends: Vec::new(),
+            tls_cert: None,
+            tls_key: None,
         }
     }
 }
@@ -114,6 +122,26 @@ mod tests {
             "backends = [{ addr = \"127.0.0.1:3005\", sock = \"/x.sock\" }]"
         )
         .is_err());
+    }
+
+    #[test]
+    fn tls_pair_needs_both_files_present() {
+        // Absent = plain HTTP (yesterday's default).
+        let cfg = BalancerConfig::parse("").unwrap();
+        assert!(crate::tls::tls_pair(&cfg).is_none());
+        // Half pair = fail closed, never half-TLS.
+        let cfg = BalancerConfig::parse("tls_cert = \"/x.pem\"").unwrap();
+        assert!(crate::tls::tls_pair(&cfg).is_none());
+    }
+
+    #[tokio::test]
+    async fn tls_missing_files_fail_loud() {
+        // Pointing at missing files = loud boot error, not silent plain.
+        let cfg = BalancerConfig::parse(
+            "tls_cert = \"/nope.pem\"\ntls_key = \"/nope-key.pem\"",
+        )
+        .unwrap();
+        assert!(crate::tls::load_pair(&cfg).await.is_err());
     }
 
     #[test]
