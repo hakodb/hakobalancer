@@ -110,7 +110,7 @@ async fn admin_reload_rejected_at_edge() {
     let (addr, _) = dummy_upstream("A").await;
     let proxy = Proxy::new(Arc::new(Pool::new(vec![Target::Tcp(addr)], 3)));
     let resp = proxy
-        .handle(req("POST", "/api/admin/reload"))
+        .handle("127.0.0.1".parse().unwrap(), req("POST", "/api/admin/reload"))
         .await;
     assert_eq!(resp.status(), 405);
 }

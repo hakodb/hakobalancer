@@ -1,7 +1,20 @@
-//! hakobalancer binary: parse config, build pool, serve (proxy loop lands
-//! in the next commit — this one establishes config + pool + health).
+//! hakobalancer binary: parse config, build pool, health loop, serve.
+//! One request = one backend (see proxy); /api/admin/reload never leaves.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::Response;
+use axum::routing::any;
+use axum::Router;
 use clap::Parser;
+
+use hakobalancer::config::BalancerConfig;
+use hakobalancer::health;
+use hakobalancer::pool::Pool;
+use hakobalancer::proxy::Proxy;
 
 #[derive(Parser, Debug)]
 #[command(name = "hakobalancer", about = "stateless L7 balancer over hakobackend upstreams")]
@@ -9,6 +22,19 @@ struct Args {
     /// Config file (TOML). Absent = defaults (no backends: refuses traffic).
     #[arg(long)]
     config: Option<String>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    proxy: Arc<Proxy>,
+}
+
+async fn handle(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+) -> Response<Body> {
+    st.proxy.handle(peer.ip(), req).await
 }
 
 #[tokio::main]
@@ -19,13 +45,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("cannot read config {p}: {e}"))?,
         None => String::new(),
     };
-    let cfg = hakobalancer::config::BalancerConfig::parse(&raw)
-        .map_err(|e| format!("bad config: {e}"))?;
-    let pool = hakobalancer::pool::Pool::new(cfg.targets(), 3);
-    println!(
-        "[hb] listen={} strategy={:?} backends={} health_every={}s",
-        cfg.listen, cfg.strategy, pool.len(), cfg.health_interval_secs
-    );
-    // Proxy loop follows; this commit proves config + pool parse + health.
+    let cfg = BalancerConfig::parse(&raw).map_err(|e| format!("bad config: {e}"))?;
+    let pool = Arc::new(Pool::new(cfg.targets(), 3));
+    let proxy = Arc::new(Proxy::new(pool.clone()));
+    let interval = std::time::Duration::from_secs(cfg.health_interval_secs.max(1));
+    tokio::spawn(health::run(pool.clone(), interval));
+
+    let state = AppState { proxy };
+    let app = Router::new()
+        .route("/{*path}", any(handle))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
+    println!("[hb] listening on http://{}", cfg.listen);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

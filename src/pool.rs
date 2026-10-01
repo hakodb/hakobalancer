@@ -93,6 +93,11 @@ impl Pool {
         self.backends.len()
     }
 
+    /// Target snapshot for probing (cloned; never held across awaits).
+    pub fn target_at(&self, index: usize) -> Option<Target> {
+        self.backends.get(index).map(|b| b.target.clone())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.backends.is_empty()
     }

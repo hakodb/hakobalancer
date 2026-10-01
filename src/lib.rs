@@ -11,4 +11,6 @@
 //! routinely live (both exist now: :3005 + :3010).
 
 pub mod config;
+pub mod health;
 pub mod pool;
+pub mod proxy;
