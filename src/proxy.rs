@@ -343,7 +343,7 @@ impl Proxy {
                     up.write_all(&raw).await?;
                     let rd = tokio::io::BufReader::new(up);
                     let (status, headers, rd, tail) = read_head(rd, HEAD_CAP).await?;
-                    Ok((RelayStream::Tcp(rd), status, headers, tail))
+                    Ok::<_, std::io::Error>((RelayStream::Tcp(rd), status, headers, tail))
                 }
                 #[cfg(unix)]
                 Target::Sock(sock) => {
@@ -351,7 +351,7 @@ impl Proxy {
                     up.write_all(&raw).await?;
                     let rd = tokio::io::BufReader::new(up);
                     let (status, headers, rd, tail) = read_head(rd, HEAD_CAP).await?;
-                    Ok((RelayStream::Uds(rd), status, headers, tail))
+                    Ok::<_, std::io::Error>((RelayStream::Uds(rd), status, headers, tail))
                 }
                 #[cfg(not(unix))]
                 Target::Sock(_) => Err(std::io::Error::new(
