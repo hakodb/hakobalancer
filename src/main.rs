@@ -46,8 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => String::new(),
     };
     let cfg = BalancerConfig::parse(&raw).map_err(|e| format!("bad config: {e}"))?;
+    hakobalancer::config::validate_routes(&cfg).map_err(|e| format!("bad routes: {e}"))?;
     let pool = Arc::new(Pool::new(cfg.targets(), 3));
-    let proxy = Arc::new(Proxy::new(pool.clone()));
+    let mut proxy = Proxy::new(pool.clone());
+    proxy.with_routing(cfg.routes.clone(), cfg.default_backend);
+    let proxy = Arc::new(proxy);
     let interval = std::time::Duration::from_secs(cfg.health_interval_secs.max(1));
     tokio::spawn(health::run(pool.clone(), interval));
 

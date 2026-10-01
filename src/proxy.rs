@@ -75,6 +75,35 @@ pub fn upstream_version(v: ::axum::http::Version) -> ::axum::http::Version {
 /// requests carrying a valid pin for a healthy backend go there, so WS
 /// subscriptions and their publishers land together. Anything else
 /// round-robins and re-pins. Ejected pins fall back + re-pin.
+/// One microservices route: request paths under `prefix` go to pool
+/// `backend` (index into the pool). First match wins (config order =
+/// priority, explicit and auditable). Boundary-aware: `/api/a` matches
+/// `/api/a` and `/api/a/...`, never `/api/abc`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Route {
+    pub prefix: String,
+    pub backend: usize,
+}
+
+/// First matching route index for a path, or None.
+pub fn match_route(routes: &[Route], path: &str) -> Option<usize> {
+    routes.iter().position(|r| {
+        path == r.prefix || path.starts_with(&format!("{}/", r.prefix))
+    })
+}
+
+/// Safe (read-only) methods may fail over to the default backend when a
+/// mapped backend is ejected; anything else fails closed (no split-brain
+/// writes through a stale route).
+fn is_safe_method(m: &::axum::http::Method) -> bool {
+    matches!(
+        m,
+        &::axum::http::Method::GET
+            | &::axum::http::Method::HEAD
+            | &::axum::http::Method::OPTIONS
+    )
+}
+
 pub const PIN_COOKIE: &str = "hb_route";
 
 /// Pool index from the pin cookie, or None (absent/malformed).
@@ -125,6 +154,11 @@ fn parse_response_head(buf: &[u8]) -> Option<(u16, HeaderMap, usize)> {
 
 pub struct Proxy {
     pool: Arc<Pool>,
+    /// Microservices route table (empty = pool mode, yesterday's default).
+    routes: Vec<Route>,
+    /// Default backend for unmatched paths (None = pool flow, like no
+    /// routes at all: adding a first route never 503s the rest).
+    default_backend: Option<usize>,
     http: HttpClient,
     #[cfg(unix)]
     uds: UdsClient,
@@ -151,10 +185,18 @@ impl Proxy {
         .build(hyperlocal::UnixConnector);
         Self {
             pool,
+            routes: Vec::new(),
+            default_backend: None,
             http,
             #[cfg(unix)]
             uds,
         }
+    }
+
+    /// Attach the microservices route table (builder-style; call once).
+    pub fn with_routing(&mut self, routes: Vec<Route>, default_backend: Option<usize>) {
+        self.routes = routes;
+        self.default_backend = default_backend;
     }
 
     /// Route + forward one request. `peer` is the TCP peer IP (XFF source).
@@ -168,6 +210,15 @@ impl Proxy {
                 "admin targets backends directly",
             );
         }
+        // Microservices routes bypass pin logic entirely (deterministic
+        // content routing IS the stickiness — no cookie read or set).
+        if let Some(ridx) = match_route(&self.routes, req.uri().path()) {
+            return self.serve_mapped(peer, req, ridx).await;
+        }
+        if let Some(d) = self.default_backend {
+            return self.serve_default(peer, req, d).await;
+        }
+        // No routes configured: pool + pin (the original mode).
         let pinned = pin_from(&req)
             .filter(|&i| self.pool.healthy_at(i))
             .and_then(|i| self.pool.backend_at(i).map(|b| (i, b)));
@@ -180,20 +231,82 @@ impl Proxy {
                 }
             },
         };
-        let mut resp = if wants_upgrade(&req) {
-            self.tunnel(&backend.target, req).await
-        } else {
-            match self.forward(peer, &backend.target, req).await {
-                Ok(r) => r,
-                Err(_) => err(StatusCode::BAD_GATEWAY, "upstream error"),
-            }
-        };
+        let mut resp = self.serve_one(peer, req, backend).await;
         // (Re-)pin on every served response: self-heals stale cookies,
         // costs one small header.
         if let Ok(v) = pin_cookie_value(index).parse() {
             resp.headers_mut().insert("set-cookie", v);
         }
         resp
+    }
+
+    /// Mapped path: deterministic backend, no pin involvement. Ejected
+    /// mapped backend: safe methods fail over to the default (when set
+    /// and healthy), unsafe methods and missing default fail closed.
+    async fn serve_mapped(
+        &self,
+        peer: IpAddr,
+        req: Request<Body>,
+        ridx: usize,
+    ) -> Response<Body> {
+        let mapped = self.routes.get(ridx).map(|r| r.backend);
+        let backend = mapped
+            .and_then(|i| self.pool.backend_at(i))
+            .filter(|_| {
+                mapped.is_some_and(|i| self.pool.healthy_at(i))
+            });
+        if let Some(b) = backend {
+            return self.serve_one(peer, req, b).await;
+        }
+        if is_safe_method(req.method()) {
+            if let Some(d) = self.default_backend {
+                if self.pool.healthy_at(d) {
+                    if let Some(b) = self.pool.backend_at(d) {
+                        return self.serve_one(peer, req, b).await;
+                    }
+                }
+            }
+        }
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mapped backend ejected and no healthy default",
+        )
+    }
+
+    /// Default backend for unmatched paths (single dedicated target).
+    async fn serve_default(
+        &self,
+        peer: IpAddr,
+        req: Request<Body>,
+        index: usize,
+    ) -> Response<Body> {
+        match self.pool.backend_at(index).filter(|_| self.pool.healthy_at(index)) {
+            Some(b) => {
+                let mut resp = self.serve_one(peer, req, b).await;
+                if let Ok(v) = pin_cookie_value(index).parse() {
+                    resp.headers_mut().insert("set-cookie", v);
+                }
+                resp
+            }
+            None => err(StatusCode::SERVICE_UNAVAILABLE, "default backend ejected"),
+        }
+    }
+
+    /// One backend serves one request (tunnel for upgrades, forward else).
+    async fn serve_one(
+        &self,
+        peer: IpAddr,
+        req: Request<Body>,
+        backend: &crate::pool::Backend,
+    ) -> Response<Body> {
+        if wants_upgrade(&req) {
+            self.tunnel(&backend.target, req).await
+        } else {
+            match self.forward(peer, &backend.target, req).await {
+                Ok(r) => r,
+                Err(_) => err(StatusCode::BAD_GATEWAY, "upstream error"),
+            }
+        }
     }
 
     async fn forward(

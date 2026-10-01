@@ -11,6 +11,10 @@
 //! ]
 //! ```
 
+/// One microservices route (see hakobalancer#3). Re-exported from
+/// proxy so config and routing share one type.
+pub use crate::proxy::Route;
+
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -40,6 +44,12 @@ pub struct BalancerConfig {
     pub health_interval_secs: u64,
     #[serde(default)]
     pub backends: Vec<BackendDecl>,
+    /// Microservices route table (empty = pool mode). First match wins.
+    #[serde(default)]
+    pub routes: Vec<Route>,
+    /// Default backend for unmatched paths (None = pool flow).
+    #[serde(default)]
+    pub default_backend: Option<usize>,
     /// TLS termination pair (both required to enable). Absent = plain
     /// HTTP (yesterday's default). Same certs nginx used work here.
     #[serde(default)]
@@ -63,6 +73,8 @@ impl Default for BalancerConfig {
             strategy: Strategy::default(),
             health_interval_secs: default_health_interval(),
             backends: Vec::new(),
+            routes: Vec::new(),
+            default_backend: None,
             tls_cert: None,
             tls_key: None,
         }
@@ -145,10 +157,51 @@ mod tests {
     }
 
     #[test]
+    fn route_validation_fails_closed() {
+        let base = "backends = [{ addr = \"127.0.0.1:1\" }, { addr = \"127.0.0.1:2\" }]\n";
+        let ok = base.to_string()
+            + "[[routes]]\nprefix = \"/api/a\"\nbackend = 1\n"
+            + "default_backend = 0\n";
+        let cfg = BalancerConfig::parse(&ok).unwrap();
+        assert!(validate_routes(&cfg).is_ok());
+        for bad in [
+            "[[routes]]\nprefix = \"no-slash\"\nbackend = 0\n",
+            "[[routes]]\nprefix = \"/api/a\"\nbackend = 5\n",
+            "default_backend = 9\n",
+        ] {
+            let cfg = BalancerConfig::parse(&(base.to_string() + bad)).unwrap();
+            assert!(validate_routes(&cfg).is_err(), "should reject: {bad}");
+        }
+    }
+
+    #[test]
     fn defaults_are_sane() {
         let cfg = BalancerConfig::parse("").unwrap();
         assert_eq!(cfg.listen, "0.0.0.0:8080");
         assert_eq!(cfg.strategy, Strategy::RoundRobin);
         assert!(cfg.backends.is_empty());
     }
+}
+
+/// Validate a parsed config: route/default indices must name real
+/// backends, prefixes must be absolute paths. Fail closed at parse.
+pub fn validate_routes(cfg: &BalancerConfig) -> Result<(), String> {
+    let n = cfg.backends.len();
+    for (i, r) in cfg.routes.iter().enumerate() {
+        if !r.prefix.starts_with('/') {
+            return Err(format!("routes[{i}]: prefix must start with '/'"));
+        }
+        if r.backend >= n {
+            return Err(format!(
+                "routes[{i}]: backend {} out of range (n={n})",
+                r.backend
+            ));
+        }
+    }
+    if let Some(d) = cfg.default_backend {
+        if d >= n {
+            return Err(format!("default_backend {d} out of range (n={n})"));
+        }
+    }
+    Ok(())
 }

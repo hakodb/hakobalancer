@@ -107,13 +107,15 @@ async fn mapped_prefix_routes_to_backend() {
 }
 
 #[tokio::test]
-async fn unmatched_without_default_is_503() {
+async fn unmatched_without_default_uses_pool() {
+    // No match + no default = today's pool flow (dead upstream here, so
+    // the pool's 502 proves we fell through to it, not to a 503).
     let pool = Arc::new(Pool::new(vec![Target::Tcp("x".into())], 1));
     let mut p = Proxy::new(pool);
     p.with_routing(vec![Route { prefix: "/api/a".into(), backend: 0 }], None);
     let peer = "127.0.0.1".parse().unwrap();
     let r = p.handle(peer, get("/api/other", None)).await;
-    assert_eq!(r.status(), 503);
+    assert_eq!(r.status(), 502);
 }
 
 #[tokio::test]
