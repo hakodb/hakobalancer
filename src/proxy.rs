@@ -69,7 +69,7 @@ type HttpClient = hyper_util::client::legacy::Client<
 >;
 #[cfg(unix)]
 type UdsClient =
-    hyper_util::client::legacy::Client<hyperlocal::UdsConnector, Body>;
+    hyper_util::client::legacy::Client<hyperlocal::UnixConnector, Body>;
 
 impl Proxy {
     pub fn new(pool: Arc<Pool>) -> Self {
@@ -81,7 +81,7 @@ impl Proxy {
         let uds = hyper_util::client::legacy::Client::builder(
             hyper_util::rt::TokioExecutor::new(),
         )
-        .build(hyperlocal::UdsConnector);
+        .build(hyperlocal::UnixConnector);
         Self {
             pool,
             http,
@@ -160,7 +160,7 @@ impl Proxy {
                         .map(|q| format!("?{q}"))
                         .unwrap_or_default()
                 );
-                parts.uri = hyperlocal::Uri::new(sock, &path);
+                parts.uri = hyperlocal::Uri::new(sock, &path).into();
                 let up = Request::from_parts(parts, body);
                 let resp = tokio::time::timeout(UPSTREAM_TIMEOUT, self.uds.request(up))
                     .await
