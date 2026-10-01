@@ -7,6 +7,18 @@ use std::sync::Arc;
 use hakobalancer::pool::{Pool, Target};
 use hakobalancer::proxy::Proxy;
 
+#[test]
+fn h2_requests_translate_to_h1_upstream() {
+    // The edge accepts h2 (TLS+ALPN); upstreams only speak h1. Version
+    // must not leak across (hyper errors HTTP_2 to an h1 pool as 502).
+    use hakobalancer::proxy::upstream_version;
+    use http::Version;
+    assert_eq!(upstream_version(Version::HTTP_2), Version::HTTP_11);
+    assert_eq!(upstream_version(Version::HTTP_3), Version::HTTP_11);
+    assert_eq!(upstream_version(Version::HTTP_11), Version::HTTP_11);
+    assert_eq!(upstream_version(Version::HTTP_10), Version::HTTP_10);
+}
+
 /// Dummy upstream: records the X-Forwarded-For it saw, answers with its
 /// name + echoed path. Raw TCP (no framework) so the test proves the
 /// balancer speaks plain HTTP/1.1 to anything.

@@ -59,6 +59,18 @@ fn wants_upgrade(req: &Request<Body>) -> bool {
     req.headers().contains_key("upgrade")
 }
 
+/// Edge translation: upstreams are HTTP/1 only. HTTP/1.0 stays (some
+/// legacy healthcheckers speak it); everything newer becomes HTTP/1.1.
+/// Pure for testing.
+/// Public so the contract is pinned by test (live h2 edge verified
+/// on the server against real TLS).
+pub fn upstream_version(v: ::axum::http::Version) -> ::axum::http::Version {
+    match v {
+        ::axum::http::Version::HTTP_10 => ::axum::http::Version::HTTP_10,
+        _ => ::axum::http::Version::HTTP_11,
+    }
+}
+
 /// Sticky pin cookie: first response pins hb_route=<pool index>; later
 /// requests carrying a valid pin for a healthy backend go there, so WS
 /// subscriptions and their publishers land together. Anything else
@@ -191,12 +203,26 @@ impl Proxy {
         req: Request<Body>,
     ) -> Result<Response<Body>, ()> {
         let (mut parts, body) = req.into_parts();
+        // h2->h1 translation at the edge: upstreams are plain HTTP/1, so a
+        // downstream h2 request must not cross with Version::HTTP_2 (the
+        // hyper client errors it into a 502).
+        parts.version = upstream_version(parts.version);
         // Strip hop-by-hop, then stamp the real peer (replace, not append:
         // nothing upstream of a phase-1 balancer is trusted to sanitize).
         let mut headers = HeaderMap::new();
         for (k, v) in parts.headers.iter() {
             if !is_hop_by_hop(k.as_str()) {
                 headers.append(k, v.clone());
+            }
+        }
+        // h2 downstreams carry :authority, not a Host header: synthesize it
+        // from the URI authority so backends see the real domain (not a
+        // loopback fallback) for their own host gates and logs.
+        if !headers.contains_key("host") {
+            if let Some(a) = parts.uri.authority() {
+                if let Ok(v) = a.as_str().parse() {
+                    headers.insert("host", v);
+                }
             }
         }
         headers.insert("x-forwarded-for", peer.to_string().parse().unwrap());
