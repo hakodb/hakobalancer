@@ -248,7 +248,26 @@ impl Proxy {
                 if std::env::var("HB_TIMING").is_ok() {
                     eprintln!("DBG head={:?}", t0.elapsed());
                 }
-                Ok(strip_hop_headers(resp))
+                let resp = strip_hop_headers(resp);
+                if std::env::var("HB_TIMING").is_ok() {
+                    // Drain-and-time the body to locate post-head stalls
+                    // (temporary debug; body normally streams untouched).
+                    use http_body_util::BodyExt;
+                    let (parts2, body2) = resp.into_parts();
+                    let t1 = std::time::Instant::now();
+                    match body2.collect().await {
+                        Ok(collected) => {
+                            eprintln!("DBG body={:?}", t1.elapsed());
+                            Ok(Response::from_parts(
+                                parts2,
+                                Body::from(collected.to_bytes()),
+                            ))
+                        }
+                        Err(_) => Err(()),
+                    }
+                } else {
+                    Ok(resp)
+                }
             }
             #[cfg(unix)]
             Target::Sock(sock) => {
